@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# Conda
+.env
+.conda
+
+# Models
+*.pth
+*.pt
+*.ckpt
+
+# Outputs
+outputs/
+runs/
+logs/
+
+# Data
+data/
