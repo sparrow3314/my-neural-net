@@ -24,3 +24,9 @@ logs/
 
 # Data
 data/
+data
+outputs
+checkpoints
+*.pt
+*.pth
+*.ckpt
