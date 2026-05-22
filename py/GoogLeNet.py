@@ -80,7 +80,7 @@ class GoogLeNet_V1(nn.Module):
         )
         self.dense = nn.Sequential(
             nn.Linear(1024, 2),
-            nn.Softmax(dim = 1)
+            # nn.Softmax(dim = 1)
         )
 
     def forward(self, x):

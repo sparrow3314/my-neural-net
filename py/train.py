@@ -21,9 +21,9 @@ data_root = project_root / 'data' / 'dogncat'
 output_root = project_root / 'outputs' / 'dogncat'
 train_path = data_root / 'train'
 val_path = data_root / 'val'
-batch_size = 32
+batch_size = 128
 EPOCH = 50
-learning_rate = 0.001
+learning_rate = 0.004
 # 定义数据加载器
 train_dataset = datasets.ImageFolder(root=train_path, transform = image_transform)
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = batch_size, shuffle=True, num_workers=4)
@@ -31,12 +31,38 @@ train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = batch_siz
 val_dataset = datasets.ImageFolder(root=val_path, transform = image_transform)
 val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = batch_size, shuffle=True, num_workers=4)
 
+
+def print_gpu_status(use_gpu):
+    print('CUDA available:', torch.cuda.is_available())
+    print('GPU enabled for training:', use_gpu)
+
+    if not torch.cuda.is_available():
+        print('No CUDA GPU detected; training will run on CPU.')
+        return
+
+    print('CUDA version:', torch.version.cuda)
+    print('GPU count:', torch.cuda.device_count())
+    current_device = torch.cuda.current_device()
+
+    for device_id in range(torch.cuda.device_count()):
+        props = torch.cuda.get_device_properties(device_id)
+        total_memory = props.total_memory / (1024 ** 3)
+        allocated_memory = torch.cuda.memory_allocated(device_id) / (1024 ** 3)
+        reserved_memory = torch.cuda.memory_reserved(device_id) / (1024 ** 3)
+        marker = '*' if use_gpu and device_id == current_device else ' '
+        print(
+            '%s GPU %d: %s | total: %.2f GB | allocated: %.2f GB | reserved: %.2f GB'
+            % (marker, device_id, props.name, total_memory, allocated_memory, reserved_memory)
+        )
+
+
 if __name__ == '__main__':
     output_root.mkdir(parents=True, exist_ok=True)
     # 实例化网络
     net = GoogLeNet_V1()
     # 是否使用GPU
     use_gpu=torch.cuda.is_available()
+    print_gpu_status(use_gpu)
     if(use_gpu):
         net = net.cuda()
     # 定义优化器
@@ -45,6 +71,7 @@ if __name__ == '__main__':
     loss_func = torch.nn.CrossEntropyLoss()
     # 开始训练
     for epoch in range(EPOCH):
+        net.train()
         running_loss = 0.0
         for step, data in enumerate(train_loader):
             # 获取数据并放置于GPU或CPU中
@@ -68,13 +95,15 @@ if __name__ == '__main__':
         # 每个epoch结束后保存权重
         # torch.save(net.state_dict(), output_root / ('weights_%d.pth' % epoch))
         ########验证集精度#######
+        net.eval()
         correct = 0
         total = 0
         with torch.no_grad():
             # 不计算梯度，节省时间
             for (images, labels) in val_loader:
-                images = images.cuda()
-                labels = labels.cuda()
+                if(use_gpu):
+                    images = images.cuda()
+                    labels = labels.cuda()
                 outputs = net(images)
                 numbers, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
