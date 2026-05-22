@@ -4,7 +4,6 @@ from torch import optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, datasets
 from torch.autograd import Variable
-from net import VGGnet
 # 从同一项目文件夹下加载另一个py文件
 from GoogLeNet import GoogLeNet_V1
 
