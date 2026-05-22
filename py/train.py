@@ -1,4 +1,5 @@
 import torch
+from pathlib import Path
 from torch import optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, datasets
@@ -15,9 +16,12 @@ image_transform = transforms.Compose([
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 # 定义训练集路径、测试集路径、批大小、训练次数、学习率
-train_path = './dog_vs_cat/train/'
-val_path = './dog_vs_cat/val/'
-batch_size = 16
+project_root = Path(__file__).resolve().parents[1]
+data_root = project_root / 'data' / 'dogncat'
+output_root = project_root / 'outputs' / 'dogncat'
+train_path = data_root / 'train'
+val_path = data_root / 'val'
+batch_size = 32
 EPOCH = 50
 learning_rate = 0.001
 # 定义数据加载器
@@ -28,6 +32,7 @@ val_dataset = datasets.ImageFolder(root=val_path, transform = image_transform)
 val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = batch_size, shuffle=True, num_workers=4)
 
 if __name__ == '__main__':
+    output_root.mkdir(parents=True, exist_ok=True)
     # 实例化网络
     net = GoogLeNet_V1()
     # 是否使用GPU
@@ -58,10 +63,10 @@ if __name__ == '__main__':
             # 打印状态信息
             running_loss += loss.item()
             if step % 100 == 99:    # 每100批次打印一次
-                print('[epoch:%d, step:%5d] loss: %.3f' %(epoch + 1, step + 1, running_loss / 1000))
+                print('[epoch:%d, step:%5d] loss: %.3f' %(epoch + 1, step + 1, running_loss / 100))
                 running_loss = 0.0
         # 每个epoch结束后保存权重
-        torch.save(net.state_dict(), './logs/weights_%d.pth' % epoch)
+        # torch.save(net.state_dict(), output_root / ('weights_%d.pth' % epoch))
         ########验证集精度#######
         correct = 0
         total = 0
@@ -75,6 +80,7 @@ if __name__ == '__main__':
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
         print('Accuracy of the network on the val images: %d %%' % (100 * correct / total))
+    torch.save(net.state_dict(), output_root / 'final_weights.pth')
     print('Finished Training')
 
 
