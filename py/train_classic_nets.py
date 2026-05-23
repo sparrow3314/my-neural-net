@@ -26,45 +26,71 @@ class ModelConfig:
 
 
 MODEL_CONFIGS = {
-    "lenet": ModelConfig(image_size=32, grayscale=True, default_batch_size=128),
+    "lenet": ModelConfig(image_size=64, grayscale=True, default_batch_size=128),
     "alexnet": ModelConfig(image_size=227, grayscale=False, default_batch_size=64),
     "vggnet": ModelConfig(image_size=224, grayscale=False, default_batch_size=16),
     "resnet": ModelConfig(image_size=224, grayscale=False, default_batch_size=64),
 }
 
 
-def build_transform(config):
-    transform_steps = [
-        transforms.Resize(256) if config.image_size >= 224 else transforms.Resize((config.image_size, config.image_size)),
+CLASS_ALIASES = {
+    "cat": "cat",
+    "cats": "cat",
+    "dog": "dog",
+    "dogs": "dog",
+}
+
+
+def normalize_class_name(class_name):
+    normalized = class_name.strip().lower()
+    return CLASS_ALIASES.get(normalized, normalized)
+
+
+def canonical_class_to_idx(dataset):
+    return {normalize_class_name(class_name): idx for class_name, idx in dataset.class_to_idx.items()}
+
+
+def build_normalize_steps(config):
+    if config.grayscale:
+        return [
+            transforms.Grayscale(num_output_channels=1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5], std=[0.5]),
+        ]
+
+    return [
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
     ]
 
+
+def build_transforms(config):
     if config.image_size >= 224:
-        transform_steps.append(transforms.CenterCrop(config.image_size))
-
-    if config.grayscale:
-        transform_steps.append(transforms.Grayscale(num_output_channels=1))
-        transform_steps.extend(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5]),
-            ]
-        )
+        base_steps = [
+            transforms.Resize(256),
+            transforms.CenterCrop(config.image_size),
+        ]
     else:
-        transform_steps.extend(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-            ]
-        )
+        base_steps = [
+            transforms.Resize((config.image_size, config.image_size)),
+        ]
 
-    return transforms.Compose(transform_steps)
+    train_transform = transforms.Compose(base_steps + build_normalize_steps(config))
+    val_transform = transforms.Compose(base_steps + build_normalize_steps(config))
+    return train_transform, val_transform
+
+
+def build_transform(config):
+    _, val_transform = build_transforms(config)
+    return val_transform
 
 
 def build_model(model_name, num_classes):
     if model_name == "lenet":
         model = LeNet()
         model.dense = nn.Sequential(
-            nn.Linear(120, 84),
+            nn.Linear(model.flatten_features, 84),
+            # nn.ReLU(inplace=True),
             nn.Sigmoid(),
             nn.Linear(84, num_classes),
         )
@@ -130,17 +156,30 @@ def print_gpu_status(device):
         )
 
 
-def make_dataloaders(args, transform):
+def make_dataloaders(args, train_transform, val_transform):
     train_path = args.data_root / "train"
     val_path = args.data_root / "val"
 
-    train_dataset = datasets.ImageFolder(root=train_path, transform=transform)
-    val_dataset = datasets.ImageFolder(root=val_path, transform=transform)
+    train_dataset = datasets.ImageFolder(root=train_path, transform=train_transform)
+    val_dataset = datasets.ImageFolder(root=val_path, transform=val_transform)
 
     if len(train_dataset.classes) != len(val_dataset.classes):
         raise ValueError(
             "Train and val must have the same number of classes: "
             f"{len(train_dataset.classes)} != {len(val_dataset.classes)}"
+        )
+    train_class_to_idx = canonical_class_to_idx(train_dataset)
+    val_class_to_idx = canonical_class_to_idx(val_dataset)
+    if train_class_to_idx != val_class_to_idx:
+        raise ValueError(
+            "Train and val class mappings must match: "
+            f"{train_dataset.class_to_idx} != {val_dataset.class_to_idx}"
+        )
+    if train_dataset.class_to_idx != val_dataset.class_to_idx:
+        print(
+            "Class folder names differ but normalized mappings match: "
+            f"{train_dataset.class_to_idx} -> {train_class_to_idx}, "
+            f"{val_dataset.class_to_idx} -> {val_class_to_idx}"
         )
 
     pin_memory = args.device_obj.type == "cuda"
@@ -167,6 +206,9 @@ def make_dataloaders(args, transform):
 def train_one_epoch(model, loader, optimizer, loss_func, device, epoch):
     model.train()
     running_loss = 0.0
+    total_loss = 0.0
+    correct = 0
+    total = 0
 
     for step, (inputs, labels) in enumerate(loader):
         inputs = inputs.to(device, non_blocking=True)
@@ -174,15 +216,24 @@ def train_one_epoch(model, loader, optimizer, loss_func, device, epoch):
 
         outputs = model(inputs)
         loss = loss_func(outputs, labels)
+        batch_size = labels.size(0)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         running_loss += loss.item()
+        total_loss += loss.item() * batch_size
+        _, predicted = torch.max(outputs.data, 1)
+        total += batch_size
+        correct += (predicted == labels).sum().item()
         if step % 100 == 99:
             print("[epoch:%d, step:%5d] loss: %.3f" % (epoch + 1, step + 1, running_loss / 100))
             running_loss = 0.0
+
+    avg_loss = total_loss / total if total else 0.0
+    accuracy = 100.0 * correct / total if total else 0.0
+    return avg_loss, accuracy
 
 
 def evaluate(model, loader, device):
@@ -202,6 +253,14 @@ def evaluate(model, loader, device):
     return 100.0 * correct / total if total else 0.0
 
 
+def build_optimizer(args, model):
+    if args.optimizer == "adam":
+        return optim.Adam(model.parameters(), lr=args.lr)
+    if args.optimizer == "sgd":
+        return optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+    raise ValueError(f"Unsupported optimizer: {args.optimizer}")
+
+
 def run_training(args):
     config = MODEL_CONFIGS[args.model]
     if args.batch_size is None:
@@ -218,8 +277,8 @@ def run_training(args):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(args.seed)
 
-    transform = build_transform(config)
-    train_dataset, train_loader, val_loader = make_dataloaders(args, transform)
+    train_transform, val_transform = build_transforms(config)
+    train_dataset, train_loader, val_loader = make_dataloaders(args, train_transform, val_transform)
 
     model = build_model(args.model, num_classes=len(train_dataset.classes)).to(args.device_obj)
     print_gpu_status(args.device_obj)
@@ -227,15 +286,31 @@ def run_training(args):
     print("Batch size:", args.batch_size)
     print("Epochs:", args.epochs)
     print("Learning rate:", args.lr)
+    print("Optimizer:", args.optimizer)
+    print("LR reduce factor:", args.lr_reduce_factor)
+    print("LR patience:", args.lr_patience)
+    print("Minimum learning rate:", args.min_lr)
     print("Output dir:", output_dir)
 
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+    optimizer = build_optimizer(args, model)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=args.lr_reduce_factor,
+        patience=args.lr_patience,
+        min_lr=args.min_lr,
+    )
     loss_func = nn.CrossEntropyLoss()
 
     for epoch in range(args.epochs):
-        train_one_epoch(model, train_loader, optimizer, loss_func, args.device_obj, epoch)
+        train_loss, train_accuracy = train_one_epoch(model, train_loader, optimizer, loss_func, args.device_obj, epoch)
         accuracy = evaluate(model, val_loader, args.device_obj)
-        print("Accuracy of the network on the val images: %.2f %%" % accuracy)
+        scheduler.step(accuracy)
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(
+            "Epoch %d/%d | train loss: %.4f | train acc: %.2f %% | val acc: %.2f %% | lr: %.6f"
+            % (epoch + 1, args.epochs, train_loss, train_accuracy, accuracy, current_lr)
+        )
 
         if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
             torch.save(model.state_dict(), output_dir / ("weights_%d.pth" % (epoch + 1)))
@@ -244,7 +319,24 @@ def run_training(args):
     print("Finished Training")
 
 
-def parse_args(default_model=None):
+def parse_args(
+    default_model=None,
+    default_epochs=50,
+    default_batch_size=None,
+    default_lr=None,
+    default_momentum=0.9,
+    default_optimizer="sgd",
+    default_num_workers=4,
+    default_lr_reduce_factor=0.5,
+    default_lr_patience=3,
+    default_min_lr=1e-5,
+    default_save_every=0,
+    default_weights_name="final_weights.pth",
+    default_seed=None,
+    default_device="auto",
+    default_data_root=DEFAULT_DATA_ROOT,
+    default_output_root=DEFAULT_OUTPUT_ROOT,
+):
     parser = argparse.ArgumentParser(description="Train LeNet, AlexNet, VGGNet, or ResNet on dog/cat images.")
     parser.add_argument(
         "--model",
@@ -253,26 +345,30 @@ def parse_args(default_model=None):
         required=default_model is None,
         help="Model to train. Wrapper scripts set this automatically.",
     )
-    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--lr", type=float, default=None)
-    parser.add_argument("--momentum", type=float, default=0.9)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--save-every", type=int, default=0)
-    parser.add_argument("--weights-name", default="final_weights.pth")
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--data-root", type=Path, default=default_data_root)
+    parser.add_argument("--output-root", type=Path, default=default_output_root)
+    parser.add_argument("--epochs", type=int, default=default_epochs)
+    parser.add_argument("--batch-size", type=int, default=default_batch_size)
+    parser.add_argument("--lr", type=float, default=default_lr)
+    parser.add_argument("--momentum", type=float, default=default_momentum)
+    parser.add_argument("--optimizer", choices=["sgd", "adam"], default=default_optimizer)
+    parser.add_argument("--num-workers", type=int, default=default_num_workers)
+    parser.add_argument("--lr-reduce-factor", type=float, default=default_lr_reduce_factor)
+    parser.add_argument("--lr-patience", type=int, default=default_lr_patience)
+    parser.add_argument("--min-lr", type=float, default=default_min_lr)
+    parser.add_argument("--save-every", type=int, default=default_save_every)
+    parser.add_argument("--weights-name", default=default_weights_name)
+    parser.add_argument("--seed", type=int, default=default_seed)
     parser.add_argument(
         "--device",
-        default="auto",
+        default=default_device,
         help='Use "auto", "cpu", "cuda", or a specific CUDA device like "cuda:0".',
     )
     return parser.parse_args()
 
 
-def main(default_model=None):
-    run_training(parse_args(default_model=default_model))
+def main(default_model=None, **default_kwargs):
+    run_training(parse_args(default_model=default_model, **default_kwargs))
 
 
 if __name__ == "__main__":
