@@ -1,0 +1,6 @@
+version00 MAX_ARC_GEN_VALIDATE = 50    rng = random.Random(42)    torch.manual_seed(0)
+version01 MAX_ARC_GEN_VALIDATE = 80    rng = random.Random(123)   torch.manual_seed(42)
+version02 MAX_ARC_GEN_VALIDATE = 110   rng = random.Random(154)   torch.manual_seed(31)
+version03 MAX_ARC_GEN_VALIDATE = 140   rng = random.Random(257)   torch.manual_seed(1500)
+version04 MAX_ARC_GEN_VALIDATE = 170   rng = random.Random(369)   torch.manual_seed(1154)
+version05 MAX_ARC_GEN_VALIDATE = 200   rng = random.Random(167)   torch.manual_seed(516)
